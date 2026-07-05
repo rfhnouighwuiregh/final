@@ -42,10 +42,19 @@ def health():
 
 
 async def _run_both_bots():
-    """Запускает polling ОБОИХ ботов одновременно."""
+    """
+    Запускает polling ОБОИХ ботов одновременно.
+
+    handle_signals=False — ОБЯЗАТЕЛЬНО для запуска в фоновом потоке: по
+    умолчанию aiogram пытается повесить обработчик SIGINT/SIGTERM для
+    аккуратного завершения, а это возможно только в главном потоке
+    интерпретатора. У нас главный поток занят Flask-сервером, боты крутятся
+    в отдельном Thread — без этого флага polling падает сразу при старте с
+    RuntimeError: set_wakeup_fd only works in main thread of the main interpreter.
+    """
     await asyncio.gather(
-        dp.start_polling(bot),
-        admin_dp.start_polling(admin_bot)
+        dp.start_polling(bot, handle_signals=False),
+        admin_dp.start_polling(admin_bot, handle_signals=False)
     )
 
 
