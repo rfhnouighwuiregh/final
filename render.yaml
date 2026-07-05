@@ -3,9 +3,8 @@ services:
     name: blockinspector
     env: python
     plan: free
-    pythonVersion: "3.11"
     buildCommand: "pip install --no-cache-dir -r requirements.txt"
-    startCommand: "python main.py"
+    startCommand: "python app.py"
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"

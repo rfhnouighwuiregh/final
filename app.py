@@ -1,36 +1,63 @@
+"""
+Точка входа для Render (Web Service, бесплатный тариф).
+
+На бесплатном тарифе Render нет типа сервиса "Background Worker" — доступен
+только "Web Service", который ОБЯЗАН слушать $PORT, иначе Render считает
+деплой нездоровым и убивает его. Сам бот (main.py) никакой порт не слушает —
+это обычный long-polling процесс. Поэтому здесь поднимаем:
+  1) полноценный Flask-сервер, который просто отвечает "OK" на /health —
+     чтобы Render видел, что сервис жив;
+  2) оба бота (клиентский и админский) в фоновом потоке, через polling.
+
+ВАЖНО: бесплатный Web Service на Render "засыпает" после ~15 минут без
+ВХОДЯЩИХ HTTP-запросов. Long-polling самого бота Render не считает
+активностью (это исходящие запросы к Telegram, а не входящие к нам). Значит
+бот всё равно уснёт, если никто не дёргает /health снаружи. Если это важно —
+настрой внешний пинг (например, UptimeRobot или cron-задачу) на
+https://<твой-сервис>.onrender.com/health каждые 5-10 минут.
+"""
+
 import asyncio
 import os
 from threading import Thread
+
 from flask import Flask
 
-# Импортируем твоего бота из основного файла
-# Если твой основной бот называется bot.py:
-from main import bot, dp
-
-# Если основной файл называется main.py — раскомментируй эту строку и закомментируй верхнюю:
-# from main import bot, dp
+# Импорт main.py запускает регистрацию всех хэндлеров (client_bot, payments,
+# admin_bot) на dp / admin_dp — точно так же, как при обычном запуске
+# `python main.py`, только без вызова его polling-цикла напрямую.
+from main import bot, admin_bot, dp, admin_dp
 
 app = Flask(__name__)
+
 
 @app.route('/')
 def index():
     return "✅ Бот работает!"
 
+
 @app.route('/health')
 def health():
     return "OK", 200
 
-def run_bot():
-    """Запускает бота в отдельном потоке."""
-    print("🚀 Запуск бота...")
-    asyncio.run(dp.start_polling(bot))
+
+async def _run_both_bots():
+    """Запускает polling ОБОИХ ботов одновременно."""
+    await asyncio.gather(
+        dp.start_polling(bot),
+        admin_dp.start_polling(admin_bot)
+    )
+
+
+def run_bots():
+    print("🚀 Запуск ботов (клиентский + админский)...")
+    asyncio.run(_run_both_bots())
+
 
 if __name__ == '__main__':
-    # Запускаем бота в фоновом потоке
-    bot_thread = Thread(target=run_bot)
+    bot_thread = Thread(target=run_bots, daemon=True)
     bot_thread.start()
-    
-    # Запускаем Flask-сервер для Render
+
     port = int(os.environ.get('PORT', 5000))
     print(f"🌐 Запуск веб-сервера на порту {port}...")
     app.run(host='0.0.0.0', port=port)
