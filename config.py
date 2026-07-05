@@ -12,7 +12,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 PRICE_PER_SUBSCRIBER_RUB = 0.40
 STARS_MULTIPLIER = 1.35
 PRICE_PER_SUBSCRIBER_STARS = round(PRICE_PER_SUBSCRIBER_RUB * STARS_MULTIPLIER, 2)
-MIN_ORDER = 50
+MIN_ORDER = 10
 MAX_ORDER = 50000
 
 # Минимальное количество подписчиков на канале клиента, чтобы принять заказ
