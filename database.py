@@ -104,3 +104,4 @@ def update_prmotion_order_id(order_id, prmotion_id):
 
 # Загружаем заказы сразу при импорте модуля (как было в оригинале)
 load_orders()
+
