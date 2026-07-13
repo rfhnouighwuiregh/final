@@ -3,6 +3,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     LabeledPrice, PreCheckoutQuery
 )
+from datetime import datetime  # ← Добавили импорт
 
 import config
 import database
@@ -14,9 +15,7 @@ def _order_id_from_callback(data: str, index: int) -> int:
     return int(data.split("_")[index])
 
 
-# ========== КЛИЕНТ НАЖАЛ "ОПЛАТИТЬ" (после подтверждения заказа админом) ==========
-# ВАЖНО: фильтр сужен, чтобы не перехватывать "pay_stars_..." и "pay_card_...",
-# которые тоже начинаются с "pay_" — раньше это ломало кнопку Stars/карта.
+# ========== КЛИЕНТ НАЖАЛ "ОПЛАТИТЬ" ==========
 @dp.callback_query(
     lambda call: call.data.startswith("pay_")
     and not call.data.startswith("pay_stars_")
@@ -36,7 +35,6 @@ async def client_pay(callback: types.CallbackQuery):
         return
     await callback.answer()
 
-    # чистим кнопки предыдущего шага, чтобы в чате не копились рабочие кнопки
     await callback.message.edit_reply_markup(reply_markup=None)
 
     count = order['count']
@@ -74,8 +72,7 @@ async def pay_card(callback: types.CallbackQuery):
     await callback.message.answer(
         f"🏦 <b>Оплата картой / СБП пока не работает</b>\n\n"
         "Мы дорабатываем приём платежей картой и СБП, скоро всё заработает.\n"
-        "Сейчас доступна оплата через ⭐ Stars, либо напишите в поддержку — "
-        "оформим заказ и подскажем, как оплатить.",
+        "Сейчас доступна оплата через ⭐ Stars.",
         parse_mode="HTML"
     )
 
@@ -145,35 +142,37 @@ async def pay_stars(callback: types.CallbackQuery):
 
 @dp.pre_checkout_query()
 async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
-    # У PreCheckoutQuery поле называется invoice_payload, а не payload!
     payload = pre_checkout_query.invoice_payload
     if payload.startswith("stars_order_"):
         order_id = int(payload.split("_")[2])
     else:
         order_id = int(payload.split("_")[1])
+
     order = database.get_order(order_id)
     if not order:
         await pre_checkout_query.answer(ok=False, error_message="Заказ не найден!")
         return
 
-    # ВАЖНО: проверяем PRmotion ДО того, как Telegram спишет деньги с клиента.
-    # Если ответить ok=False — оплата просто не проведётся, звёзды с клиента
-    # не списываются вообще. Это единственный момент, когда можно отменить
-    # платёж без необходимости делать возврат вручную.
+    # Проверка перед оплатой
     ok, error_text = await precheck_order(order)
+    
     if not ok:
-        await pre_checkout_query.answer(ok=False, error_message=error_text)
-        print(f"🚫 Оплата заказа #{order_id} отклонена на этапе pre-checkout: {error_text}")
-        try:
-            await admin_bot.send_message(
-                config.ADMIN_ID,
-                f"⚠️ <b>Оплата заказа #{order_id} автоматически отклонена</b>\n\n"
-                f"Причина: {error_text}\n\n"
-                "Клиент деньги НЕ потерял — Stars не списаны, оплата не прошла.",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            print(f"⚠️ Не удалось уведомить админа об отклонённой оплате: {e}")
+        await pre_checkout_query.answer(ok=False, error_message=error_text[:180])
+
+        # Улучшенное уведомление для админа
+        await admin_bot.send_message(
+            config.ADMIN_ID,
+            f"⚠️ <b>Оплата заказа #{order_id} ОТКЛОНЕНА</b>\n\n"
+            f"👤 Клиент: @{order.get('username', 'нет_юзернейма')}\n"
+            f"🆔 ID: <code>{order['user_id']}</code>\n"
+            f"📢 Канал: {order['channel']}\n"
+            f"👥 {order['count']} подписчиков\n"
+            f"💰 Сумма: {order['price']:.2f} ₽\n\n"
+            f"🔍 Причина:\n{error_text}\n\n"
+            f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
+            parse_mode="HTML"
+        )
+        print(f"🚫 Оплата #{order_id} отклонена: {error_text}")
         return
 
     await pre_checkout_query.answer(ok=True)
@@ -183,12 +182,12 @@ async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
 @dp.message(lambda message: message.successful_payment is not None)
 async def successful_payment_handler(message: types.Message):
     payment = message.successful_payment
-    # У SuccessfulPayment тоже invoice_payload, а не payload!
     payload = payment.invoice_payload
     if payload.startswith("stars_order_"):
         order_id = int(payload.split("_")[2])
     else:
         order_id = int(payload.split("_")[1])
+    
     database.update_order_status(order_id, "оплачено")
     await message.answer("✅ Оплата прошла успешно! Заказ отправлен в работу.")
     await send_to_prmotion(order_id)

@@ -24,9 +24,9 @@ from threading import Thread
 from flask import Flask
 
 # Импорт main.py запускает регистрацию всех хэндлеров (client_bot, payments,
-# admin_bot) на dp / admin_dp — точно так же, как при обычном запуске
-# `python main.py`, только без вызова его polling-цикла напрямую.
-from main import bot, admin_bot, dp, admin_dp
+# admin_bot, daily_report) на dp / admin_dp — точно так же, как при обычном
+# запуске `python main.py`, только без вызова его polling-цикла напрямую.
+from main import bot, admin_bot, dp, admin_dp, startup_checks
 
 app = Flask(__name__)
 
@@ -52,6 +52,12 @@ async def _run_both_bots():
     в отдельном Thread — без этого флага polling падает сразу при старте с
     RuntimeError: set_wakeup_fd only works in main thread of the main interpreter.
     """
+    # ВАЖНО: раньше startup_checks() (проверка PRmotion + запуск планировщика
+    # ежедневного отчёта) вызывалась только внутри main.main(), а main() в
+    # этом сценарии (запуск через app.py на Render) вообще не вызывается —
+    # поэтому ни проверка PRmotion при старте, ни ежедневный отчёт на Render
+    # реально не работали. Теперь вызываем явно и здесь тоже.
+    await startup_checks()
     await asyncio.gather(
         dp.start_polling(bot, handle_signals=False),
         admin_dp.start_polling(admin_bot, handle_signals=False)

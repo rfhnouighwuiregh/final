@@ -27,6 +27,11 @@ PRMOTION_API_KEY = os.getenv("PRMOTION_API_KEY")
 PRMOTION_SERVICE_ID = int(os.getenv("PRMOTION_SERVICE_ID", 0))
 PRMOTION_API_URL = os.getenv("PRMOTION_API_URL", "https://api.prmotion.me/v1")
 
+# ========== КАНАЛ НОВОСТЕЙ ==========
+# Публичный канал с @username, например "@my_news_channel".
+# Админ-бот должен быть добавлен в канал администратором с правом публикации постов.
+NEWS_CHANNEL = os.getenv("NEWS_CHANNEL")
+
 # ========== ПРОВЕРКА ПРИ СТАРТЕ ==========
 print(f"✅ BOT_TOKEN: {TOKEN[:10]}..." if TOKEN else "❌ BOT_TOKEN не найден!")
 print(f"✅ ADMIN_BOT_TOKEN: {ADMIN_BOT_TOKEN[:10]}..." if ADMIN_BOT_TOKEN else "❌ ADMIN_BOT_TOKEN не найден!")
