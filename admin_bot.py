@@ -4,8 +4,13 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
 import database
 from bots import bot, admin_bot, admin_dp
+from prmotion import precheck_order
 
-admin_replies = {}
+# Единый механизм "жду свободный текст от админа" — используется и для
+# ответа в поддержку, и для причины отклонения заказа. Раньше это были два
+# независимых словаря, из-за чего один сценарий мог перебить другой.
+# Значение: ('reply', user_id) или ('reject_reason', order_id).
+admin_pending = {}
 
 
 # ========== ПОДТВЕРЖДЕНИЕ / ОТКЛОНЕНИЕ ЗАКАЗА ==========
@@ -23,8 +28,35 @@ async def confirm_order(callback: types.CallbackQuery):
         await callback.answer(f"⚠️ Заказ уже {order['status']}", show_alert=True)
         return
 
+    await callback.answer("🔍 Проверяю PRmotion...")
+
+    # Свежая проверка прямо в момент подтверждения — не полагаемся только на
+    # фоновую проверку при создании заказа, т.к. между созданием и
+    # подтверждением могло пройти много времени, баланс мог измениться.
+    ok, error_text = await precheck_order(order)
+
+    if not ok:
+        # ВАЖНО: кнопки "Подтвердить/Отклонить" на исходном сообщении НЕ
+        # трогаем — чтобы можно было вернуться и подтвердить позже (например,
+        # после пополнения баланса PRmotion), без необходимости всё пересоздавать.
+        await callback.message.answer(
+            f"⚠️ <b>Не могу подтвердить заказ #{order_id} — проверка PRmotion не прошла</b>\n\n"
+            f"👤 Клиент: @{order['username']}\n"
+            f"🆔 ID: <code>{order['user_id']}</code>\n"
+            f"📢 Канал: {order['channel']}\n"
+            f"👥 Подписчиков: {order['count']}\n"
+            f"💰 Сумма: {order['price']:.2f} ₽\n\n"
+            f"🔴 Причина: {error_text}\n\n"
+            "Заказ пока НЕ подтверждён и НЕ отклонён, оплата у клиента не запрошена.\n\n"
+            "Напиши текст, который увидит клиент при отклонении заказа — "
+            "или отправь /cancel, чтобы ничего не отклонять и вернуться к "
+            "заказу позже (кнопки «Подтвердить/Отклонить» на карточке заказа всё ещё активны).",
+            parse_mode="HTML"
+        )
+        admin_pending[config.ADMIN_ID] = ('reject_reason', order_id)
+        return
+
     database.update_order_status(order_id, 'ожидает_оплаты')
-    await callback.answer("✅ Заказ подтверждён!")
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(f"✅ Заказ #{order_id} подтверждён!")
 
@@ -73,26 +105,59 @@ async def handle_reply(callback: types.CallbackQuery):
         return
     user_id = int(callback.data.split("_")[1])
     await callback.answer("✏️ Введите ваш ответ")
-    admin_replies[config.ADMIN_ID] = user_id
+    admin_pending[config.ADMIN_ID] = ('reply', user_id)
     await callback.message.answer(f"✏️ Введите ответ для клиента (ID: {user_id}):")
 
 
+# ========== ЕДИНЫЙ ОБРАБОТЧИК СВОБОДНОГО ТЕКСТА ОТ АДМИНА ==========
 @admin_dp.message(lambda message: message.from_user.id == config.ADMIN_ID)
-async def admin_reply(message: types.Message):
-    if config.ADMIN_ID not in admin_replies:
+async def admin_free_text(message: types.Message):
+    if config.ADMIN_ID not in admin_pending:
         return
-    user_id = admin_replies[config.ADMIN_ID]
-    reply_text = message.text.strip()
+
+    action, target = admin_pending[config.ADMIN_ID]
+    text = (message.text or "").strip()
+
     if message.text == "/cancel":
-        del admin_replies[config.ADMIN_ID]
+        del admin_pending[config.ADMIN_ID]
         await message.answer("❌ Отменено.")
         return
-    if len(reply_text) < 2:
-        await message.answer("❌ Слишком коротко.")
-        return
-    try:
-        await bot.send_message(user_id, f"📩 <b>Ответ администратора:</b>\n\n{reply_text}", parse_mode="HTML")
-        del admin_replies[config.ADMIN_ID]
-        await message.answer("✅ Ответ отправлен!")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
+
+    if action == 'reply':
+        user_id = target
+        if len(text) < 2:
+            await message.answer("❌ Слишком коротко.")
+            return
+        try:
+            await bot.send_message(user_id, f"📩 <b>Ответ администратора:</b>\n\n{text}", parse_mode="HTML")
+            del admin_pending[config.ADMIN_ID]
+            await message.answer("✅ Ответ отправлен!")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {str(e)}")
+
+    elif action == 'reject_reason':
+        order_id = target
+        order = database.get_order(order_id)
+        if not order:
+            await message.answer("❌ Заказ уже не найден.")
+            del admin_pending[config.ADMIN_ID]
+            return
+        if order['status'] != 'ожидает_подтверждения':
+            await message.answer(f"⚠️ Заказ уже {order['status']} — отклонять больше не нужно.")
+            del admin_pending[config.ADMIN_ID]
+            return
+        if len(text) < 2:
+            await message.answer("❌ Слишком коротко, напиши причину подробнее (или /cancel).")
+            return
+
+        database.update_order_status(order_id, 'отклонен')
+        del admin_pending[config.ADMIN_ID]
+        await message.answer(f"❌ Заказ #{order_id} отклонён с указанной причиной.")
+        try:
+            await bot.send_message(
+                order['user_id'],
+                f"❌ <b>Заказ #{order_id} отклонён.</b>\n\nПричина: {text}",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await message.answer(f"⚠️ Заказ отклонён, но не удалось уведомить клиента: {e}")

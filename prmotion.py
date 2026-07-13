@@ -121,6 +121,70 @@ async def check_prmotion_balance():
     return balance_rub, raw_balance, raw_currency
 
 
+async def get_services():
+    """Возвращает список услуг PRmotion (action=services) или None при ошибке."""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                config.PRMOTION_API_URL,
+                params={'key': config.PRMOTION_API_KEY, 'action': 'services'},
+                timeout=REQUEST_TIMEOUT
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if isinstance(data, list):
+                    return data
+                print(f"❌ PRmotion вернул неожиданный формат списка услуг: {data}")
+                return None
+        except Exception as e:
+            print(f"❌ Ошибка получения списка услуг PRmotion: {e}")
+            return None
+
+
+async def precheck_order(order: dict) -> tuple[bool, str]:
+    """
+    Проверяет, что заказ реально можно оформить в PRmotion, ДО того как
+    Telegram спишет деньги с клиента (вызывается из pre_checkout_query_handler).
+    Ничего не создаёт и не списывает — только читает (action=services, action=balance).
+
+    ЧЕСТНО: 100%-й гарантии, что реальный action=add потом пройдёт, это не
+    даёт — у PRmotion нет отдельного метода "проверить без создания". Но
+    отсекает главные типовые причины провала (нет денег, не тот SERVICE_ID,
+    количество вне допустимых границ услуги) ДО оплаты — если что-то из
+    этого не так, платёж просто не проведётся, и клиент не потеряет деньги.
+
+    Возвращает (ok, текст_ошибки_для_клиента).
+    """
+    services = await get_services()
+    if services is None:
+        return False, "Сервис временно недоступен. Попробуйте, пожалуйста, через несколько минут."
+
+    service = next(
+        (s for s in services if str(s.get('service')) == str(config.PRMOTION_SERVICE_ID)),
+        None
+    )
+    if service is None:
+        return False, "Сервис временно недоступен (ошибка конфигурации). Напишите в поддержку."
+
+    try:
+        service_min = int(float(service.get('min', 0)))
+        service_max = int(float(service.get('max', 0)))
+    except (TypeError, ValueError):
+        service_min, service_max = 0, 0
+
+    if service_min and order['count'] < service_min:
+        return False, f"Минимальное количество для этой услуги — {service_min}. Отмените заказ и создайте новый с большим количеством."
+    if service_max and order['count'] > service_max:
+        return False, f"Максимальное количество для этой услуги — {service_max}. Отмените заказ и создайте новый с меньшим количеством."
+
+    balance_rub, raw_balance, raw_currency = await check_prmotion_balance()
+    if balance_rub is None:
+        return False, "Сервис временно недоступен. Попробуйте, пожалуйста, через несколько минут."
+    if balance_rub < order['price']:
+        return False, "Сервис временно не может принять новые заказы (технические работы). Попробуйте позже или напишите в поддержку."
+
+    return True, ""
+
+
 async def create_prmotion_order(channel, quantity):
     async with aiohttp.ClientSession() as session:
         params = {

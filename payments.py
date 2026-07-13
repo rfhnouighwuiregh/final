@@ -7,7 +7,7 @@ from aiogram.types import (
 import config
 import database
 from bots import bot, dp, admin_bot
-from prmotion import send_to_prmotion
+from prmotion import send_to_prmotion, precheck_order
 
 
 def _order_id_from_callback(data: str, index: int) -> int:
@@ -155,6 +155,27 @@ async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
     if not order:
         await pre_checkout_query.answer(ok=False, error_message="Заказ не найден!")
         return
+
+    # ВАЖНО: проверяем PRmotion ДО того, как Telegram спишет деньги с клиента.
+    # Если ответить ok=False — оплата просто не проведётся, звёзды с клиента
+    # не списываются вообще. Это единственный момент, когда можно отменить
+    # платёж без необходимости делать возврат вручную.
+    ok, error_text = await precheck_order(order)
+    if not ok:
+        await pre_checkout_query.answer(ok=False, error_message=error_text)
+        print(f"🚫 Оплата заказа #{order_id} отклонена на этапе pre-checkout: {error_text}")
+        try:
+            await admin_bot.send_message(
+                config.ADMIN_ID,
+                f"⚠️ <b>Оплата заказа #{order_id} автоматически отклонена</b>\n\n"
+                f"Причина: {error_text}\n\n"
+                "Клиент деньги НЕ потерял — Stars не списаны, оплата не прошла.",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            print(f"⚠️ Не удалось уведомить админа об отклонённой оплате: {e}")
+        return
+
     await pre_checkout_query.answer(ok=True)
     print(f"✅ Pre-checkout для заказа #{order_id}")
 

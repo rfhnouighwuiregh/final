@@ -1,3 +1,4 @@
+import asyncio
 import re
 
 from aiogram import types
@@ -13,6 +14,38 @@ from aiogram.types import (
 import config
 import database
 from bots import bot, dp, admin_bot
+from prmotion import precheck_order
+
+async def _notify_admin_if_precheck_fails(order_id: int):
+    """
+    Фоновая проверка PRmotion сразу после создания заказа. Молчит, если всё
+    в порядке (чтобы не спамить админа на каждый нормальный заказ) — пишет
+    только если уже сейчас видна проблема (не хватает денег, не тот
+    SERVICE_ID, количество вне лимитов услуги), чтобы админ узнал об этом
+    заранее, а не только в момент нажатия "Подтвердить".
+    """
+    order = database.get_order(order_id)
+    if not order:
+        return
+    try:
+        ok, error_text = await precheck_order(order)
+    except Exception as e:
+        print(f"⚠️ Фоновая проверка PRmotion для заказа #{order_id} упала: {e}")
+        return
+
+    if not ok:
+        try:
+            await admin_bot.send_message(
+                config.ADMIN_ID,
+                f"⚠️ <b>Предварительная проверка заказа #{order_id}</b>\n\n"
+                f"Уже сейчас видна проблема: {error_text}\n\n"
+                "Можешь решить проблему заранее — к моменту, когда нажмёшь "
+                "«Подтвердить», бот проверит ещё раз.",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            print(f"⚠️ Не удалось отправить фоновое предупреждение по заказу #{order_id}: {e}")
+
 
 # ========== СОСТОЯНИЯ ==========
 class OrderStates(StatesGroup):
@@ -358,6 +391,11 @@ async def get_channel(message: types.Message, state: FSMContext):
         print(f"❌ Ошибка при отправке в админ-бота: {e}")
         await message.answer(f"❌ Ошибка при создании заказа: {str(e)}")
         return
+
+    # Параллельно (не задерживая ответ клиенту) пингуем PRmotion — если уже
+    # сейчас видно проблему с балансом/лимитами, админ узнает об этом сразу,
+    # не дожидаясь момента, когда сам нажмёт "Подтвердить".
+    asyncio.create_task(_notify_admin_if_precheck_fails(order_id))
 
     await message.answer(
         f"✅ <b>Заказ #{order_id} создан!</b>\n\n"
