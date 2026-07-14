@@ -3,9 +3,8 @@
 Запуск: python check_prmotion.py
 """
 import asyncio
-import aiohttp
 import config
-from prmotion import check_prmotion_balance
+from prmotion import check_prmotion_balance, get_services
 
 
 async def main():
@@ -39,26 +38,18 @@ async def main():
 
     # 2. Проверка существования указанного SERVICE_ID в списке услуг
     print("2️⃣ Проверяю список услуг (action=services)...")
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(
-                config.PRMOTION_API_URL,
-                params={"key": config.PRMOTION_API_KEY, "action": "services"},
-                timeout=aiohttp.ClientTimeout(total=15)
-            ) as resp:
-                data = await resp.json(content_type=None)
-                if isinstance(data, list):
-                    print(f"   ✅ Получено услуг: {len(data)}")
-                    matching = [s for s in data if str(s.get("service")) == str(config.PRMOTION_SERVICE_ID)]
-                    if matching:
-                        print(f"   ✅ SERVICE_ID {config.PRMOTION_SERVICE_ID} найден: {matching[0].get('name')}")
-                    else:
-                        print(f"   ❌ SERVICE_ID {config.PRMOTION_SERVICE_ID} НЕ найден в списке услуг!")
-                        print("      Проверь PRMOTION_SERVICE_ID в .env — заказы будут падать с этой услугой.")
-                else:
-                    print(f"   ⚠️ Неожиданный формат ответа: {data}")
-        except Exception as e:
-            print(f"   ❌ Ошибка запроса: {e}")
+    services = await get_services()
+    if services is None:
+        print("   ❌ Не удалось получить список услуг — см. ошибку выше.")
+    else:
+        print(f"   ✅ Получено услуг: {len(services)}")
+        matching = [s for s in services if str(s.get("service")) == str(config.PRMOTION_SERVICE_ID)]
+        if matching:
+            print(f"   ✅ SERVICE_ID {config.PRMOTION_SERVICE_ID} найден: {matching[0].get('name')}")
+        else:
+            print(f"   ❌ SERVICE_ID {config.PRMOTION_SERVICE_ID} НЕ найден в списке услуг!")
+            print("      Проверь PRMOTION_SERVICE_ID в .env — заказы будут падать с этой услугой.")
+        print("      Полный список услуг с ID и лимитами: python get_services.py")
 
     print("=" * 50)
     print("Готово.")

@@ -1,13 +1,10 @@
 from aiogram import types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command
-from datetime import datetime
 
 import config
 import database
-from bots import bot, admin_bot, admin_dp, dp   # ← важно
+from bots import bot, admin_bot, admin_dp
 from prmotion import precheck_order
-from aiogram.filters import Command
 
 
 
@@ -166,25 +163,5 @@ async def admin_free_text(message: types.Message):
             )
         except Exception as e:
             await message.answer(f"⚠️ Заказ отклонён, но не удалось уведомить клиента: {e}")
-
-        
-    print(f"📍 Запрошен ID чата: {chat_id}")
-
-@admin_dp.message(Command("addchange"))
-async def add_change(message: types.Message):
-    text = message.text.replace("/addchange", "").strip()
-    if len(text) < 5:
-        await message.answer("❌ Опиши изменение подробнее.")
-        return
-
-    try:
-        await admin_bot.send_message(
-            8931302842,
-            f"📋 <b>Изменение от {datetime.now().strftime('%d.%m.%Y %H:%M')}</b>\n\n{text}",
-            parse_mode="HTML"
-        )
-        await message.answer("✅ Отправлено в канал!")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
 
     
