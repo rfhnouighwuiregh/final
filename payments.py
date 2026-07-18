@@ -40,17 +40,17 @@ async def client_pay(callback: types.CallbackQuery):
     price_rub = order['price']
     price_stars = round(price_rub * config.STARS_MULTIPLIER)
 
+    card_label = "🏦 Оплатить картой" if config.PROVIDER_TOKEN else "🏦 Оплатить картой (пока недоступно)"
     pay_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⭐ Оплатить Stars", callback_data=f"pay_stars_{order_id}")],
-            [InlineKeyboardButton(text="🏦 Оплатить картой (временно не работает)", callback_data=f"pay_card_{order_id}")],
+            [InlineKeyboardButton(text=card_label, callback_data=f"pay_card_{order_id}")],
             [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"cancel_order_{order_id}")]
         ]
     )
     await callback.message.answer(
         f"💳 <b>Выберите способ оплаты для заказа #{order_id}</b>\n\n"
-        f"💰 Сумма: {price_rub:.2f} ₽\n"
-        f"⭐ В Stars: {price_stars} Stars",
+        f"⭐ К оплате: {price_stars} Stars (~{price_rub:.2f} ₽)",
         parse_mode="HTML",
         reply_markup=pay_kb
     )
@@ -66,14 +66,51 @@ async def pay_card(callback: types.CallbackQuery):
     if order['user_id'] != callback.from_user.id:
         await callback.answer("⛔ Это не ваш заказ!", show_alert=True)
         return
-    await callback.answer("Оплата картой временно не работает", show_alert=True)
+
+    if not config.PROVIDER_TOKEN:
+        await callback.answer("Оплата картой пока не подключена", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(
+            "🏦 <b>Оплата картой / СБП пока не настроена</b>\n\n"
+            "Сейчас доступна оплата через ⭐ Stars.",
+            parse_mode="HTML"
+        )
+        return
+
+    await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer(
-        f"🏦 <b>Оплата картой / СБП пока не работает</b>\n\n"
-        "Мы дорабатываем приём платежей картой и СБП, скоро всё заработает.\n"
-        "Сейчас доступна оплата через ⭐ Stars.",
-        parse_mode="HTML"
-    )
+
+    price_rub = order['price']
+    price_kopecks = round(price_rub * 100)
+
+    if order.get('order_type') == 'reactions':
+        reaction_label = "хорошие" if order.get('reaction_type') == 'good' else "плохие"
+        title = f"Накрутка реакций #{order_id}"
+        description = f"Пост: {order['post_link']}\nРеакции ({reaction_label}): {order['count']}"
+        item_label = f"{order['count']} реакций"
+    else:
+        title = f"Накрутка подписчиков #{order_id}"
+        description = f"Канал: {order['channel']}\nПодписчиков: {order['count']}"
+        item_label = f"{order['count']} подписчиков"
+
+    try:
+        await bot.send_invoice(
+            chat_id=callback.message.chat.id,
+            title=title,
+            description=description,
+            payload=f"card_order_{order_id}",
+            provider_token=config.PROVIDER_TOKEN,
+            currency="RUB",
+            prices=[LabeledPrice(label=item_label, amount=price_kopecks)],
+            start_parameter=f"order_{order_id}",
+            need_name=False,
+            need_phone_number=False,
+            need_email=False,
+            need_shipping_address=False,
+            is_flexible=False
+        )
+    except Exception as e:
+        await callback.message.answer(f"❌ Ошибка: {str(e)}")
 
 
 @dp.callback_query(lambda call: call.data.startswith("cancel_order_"))
@@ -152,7 +189,7 @@ async def pay_stars(callback: types.CallbackQuery):
 @dp.pre_checkout_query()
 async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
     payload = pre_checkout_query.invoice_payload
-    if payload.startswith("stars_order_"):
+    if payload.startswith("stars_order_") or payload.startswith("card_order_"):
         order_id = int(payload.split("_")[2])
     else:
         order_id = int(payload.split("_")[1])
@@ -192,7 +229,7 @@ async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
 async def successful_payment_handler(message: types.Message):
     payment = message.successful_payment
     payload = payment.invoice_payload
-    if payload.startswith("stars_order_"):
+    if payload.startswith("stars_order_") or payload.startswith("card_order_"):
         order_id = int(payload.split("_")[2])
     else:
         order_id = int(payload.split("_")[1])
