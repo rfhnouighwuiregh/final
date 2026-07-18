@@ -4,6 +4,7 @@ import aiohttp
 import config
 import database
 from bots import admin_bot
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
@@ -272,7 +273,12 @@ async def send_to_prmotion(order_id):
                 f"🔢 {database.format_order_quantity_label(order)}: {order['count']}\n"
                 f"💰 Сумма: {order['price']:.2f} ₽\n"
                 f"🆔 PRmotion ID: {prmotion_order_id}",
-                parse_mode="HTML"
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="✅ Отметить выполненным", callback_data=f"complete_order_{order_id}")]
+                    ]
+                )
             )
             return True
         else:

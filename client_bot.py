@@ -60,6 +60,10 @@ class SupportStates(StatesGroup):
     waiting_for_question = State()
 
 
+class ReviewStates(StatesGroup):
+    waiting_for_comment = State()
+
+
 # ========== КЛАВИАТУРЫ ==========
 cancel_kb = ReplyKeyboardMarkup(
     keyboard=[
@@ -72,7 +76,7 @@ main_menu_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🛒 Новый заказ")],
         [KeyboardButton(text="📞 Поддержка")],
-        [KeyboardButton(text="📋 Мои заказы")]
+        [KeyboardButton(text="📋 Мои заказы"), KeyboardButton(text="⭐ Отзывы")]
     ],
     resize_keyboard=True
 )
@@ -111,8 +115,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "👋 Привет! Я бот для заказа накрутки подписчиков и реакций на посты.\n\n"
-        f"💰 <b>Подписчики:</b> {config.PRICE_PER_SUBSCRIBER_RUB} ₽ ({config.MIN_ORDER}–{config.MAX_ORDER} шт.)\n"
-        f"❤️ <b>Реакции:</b> {config.PRICE_PER_REACTION_RUB} ₽ ({config.MIN_REACTIONS_ORDER}–{config.MAX_REACTIONS_ORDER} шт.)\n\n"
+        f"💰 <b>Подписчики:</b> {config.PRICE_PER_SUBSCRIBER_STARS} ⭐/шт ({config.MIN_ORDER}–{config.MAX_ORDER} шт.)\n"
+        f"❤️ <b>Реакции:</b> {config.PRICE_PER_REACTION_STARS} ⭐/шт ({config.MIN_REACTIONS_ORDER}–{config.MAX_REACTIONS_ORDER} шт.)\n"
+        "💳 Оплата — Telegram Stars ⭐\n\n"
         "🛒 <b>Новый заказ</b> — оформить накрутку\n"
         "📞 <b>Поддержка</b> — задать вопрос администратору\n"
         "📋 <b>Мои заказы</b> — посмотреть статус заказов\n\n"
@@ -230,6 +235,28 @@ async def refresh_orders(callback: types.CallbackQuery):
     except Exception:
         # Telegram ругается, если текст не изменился — это не ошибка
         await callback.answer("Изменений нет")
+
+
+@dp.message(lambda message: message.text == "⭐ Отзывы")
+async def show_reviews(message: types.Message):
+    avg_rating, total = database.get_rating_stats()
+    if total == 0:
+        await message.answer("Отзывов пока нет — станьте первым после заказа!", reply_markup=main_menu_kb)
+        return
+
+    header = f"⭐ <b>Средняя оценка: {avg_rating:.1f} из 5</b> ({total} оценок)\n\n"
+
+    reviews = database.get_reviews(limit=10)
+    blocks = []
+    for r in reviews:
+        stars = "⭐" * r['rating']
+        line = f"{stars} — Клиент"
+        if r.get('review_comment'):
+            line += f"\n«{r['review_comment']}»"
+        blocks.append(line)
+
+    text = header + "\n\n".join(blocks)
+    await message.answer(text, parse_mode="HTML", reply_markup=main_menu_kb)
 
 
 @dp.message(Command("support"))
@@ -451,8 +478,7 @@ async def get_count(message: types.Message, state: FSMContext):
         price_stars = round(count * config.PRICE_PER_SUBSCRIBER_STARS)
         await message.answer(
             f"✅ Принято! <b>{count}</b> подписчиков.\n"
-            f"💰 Стоимость: <b>{price_rub:.2f} ₽</b>\n"
-            f"⭐ В Stars: <b>{price_stars} Stars</b>\n\n"
+            f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)\n\n"
             "📢 Теперь укажите ссылку на канал.\nПример: @my_channel или https://t.me/my_channel",
             reply_markup=cancel_kb,
             parse_mode="HTML"
@@ -463,8 +489,7 @@ async def get_count(message: types.Message, state: FSMContext):
         price_stars = round(count * config.PRICE_PER_REACTION_STARS)
         await message.answer(
             f"✅ Принято! <b>{count}</b> реакций.\n"
-            f"💰 Стоимость: <b>{price_rub:.2f} ₽</b>\n"
-            f"⭐ В Stars: <b>{price_stars} Stars</b>\n\n"
+            f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)\n\n"
             "🔗 Теперь укажите ссылку на конкретный пост.\nПример: https://t.me/my_channel/123",
             reply_markup=cancel_kb,
             parse_mode="HTML"
@@ -511,7 +536,7 @@ async def get_channel(message: types.Message, state: FSMContext):
     summary = (
         f"👥 Подписчиков: <b>{count}</b>\n"
         f"📢 Канал: <b>{channel}</b>\n"
-        f"💰 Стоимость: <b>{price_rub:.2f} ₽</b> (~{price_stars} Stars)\n"
+        f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)\n"
     )
     await _finalize_order(message, state, order_id, summary)
 
@@ -568,8 +593,121 @@ async def get_post_link(message: types.Message, state: FSMContext):
         f"❤️ Тип: <b>Реакции ({reaction_label})</b>\n"
         f"🔗 Пост: <b>{post_link}</b>\n"
         f"🔢 Количество: <b>{count}</b>\n"
-        f"💰 Стоимость: <b>{price_rub:.2f} ₽</b> (~{price_stars} Stars)\n"
+        f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)\n"
     )
     await _finalize_order(message, state, order_id, summary)
+
+
+# ========== ОЦЕНКА ЗАКАЗА ==========
+
+async def _notify_admin_about_rating(order: dict):
+    """Отправляет админу уведомление об оценке. Если оценка < 3 и клиент не
+    оставил развёрнутый комментарий — добавляет кнопку, чтобы сразу спросить
+    у клиента, что пошло не так (переиспользует уже существующий флоу
+    'reply_{user_id}' из admin_bot.py — тот же, что для поддержки)."""
+    order_id = order['id']
+    rating = order['rating']
+    comment = order.get('review_comment')
+    has_detailed_comment = bool(comment and len(comment.strip()) >= 10)
+
+    text = (
+        f"{'⭐' * rating}{'☆' * (5 - rating)}\n"
+        f"👤 Клиент: @{order['username']}\n"
+        f"📦 Заказ #{order_id}\n"
+    )
+    if comment:
+        text += f"💬 Комментарий: {comment}\n"
+
+    reply_markup = None
+    if rating < 3 and not has_detailed_comment:
+        text += "\n⚠️ Низкая оценка без развёрнутого комментария — стоит уточнить, что не так."
+        reply_markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="✏️ Спросить, что не так", callback_data=f"reply_{order['user_id']}")]
+            ]
+        )
+
+    await admin_bot.send_message(config.ADMIN_ID, text, parse_mode="HTML", reply_markup=reply_markup)
+
+
+@dp.callback_query(lambda call: call.data.startswith("rate_"))
+async def rate_order(callback: types.CallbackQuery):
+    _, order_id_str, rating_str = callback.data.split("_")
+    order_id, rating = int(order_id_str), int(rating_str)
+
+    order = database.get_order(order_id)
+    if not order:
+        await callback.answer("❌ Заказ не найден!", show_alert=True)
+        return
+    if order['user_id'] != callback.from_user.id:
+        await callback.answer("⛔ Это не ваш заказ!", show_alert=True)
+        return
+    if order.get('rating'):
+        await callback.answer("Вы уже оценили этот заказ, спасибо!", show_alert=True)
+        return
+
+    database.set_order_rating(order_id, rating)
+    await callback.answer()
+    await callback.message.edit_text(
+        f"Спасибо за оценку: {'⭐' * rating}",
+        parse_mode="HTML"
+    )
+
+    comment_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Оставить комментарий", callback_data=f"add_comment_{order_id}")],
+            [InlineKeyboardButton(text="Пропустить", callback_data=f"skip_comment_{order_id}")]
+        ]
+    )
+    await callback.message.answer(
+        "Хотите добавить комментарий? Это по желанию.",
+        reply_markup=comment_kb
+    )
+
+
+@dp.callback_query(lambda call: call.data.startswith("add_comment_"))
+async def request_review_comment(callback: types.CallbackQuery, state: FSMContext):
+    order_id = int(callback.data.split("_")[2])
+    order = database.get_order(order_id)
+    if not order or order['user_id'] != callback.from_user.id:
+        await callback.answer("❌ Заказ не найден!", show_alert=True)
+        return
+
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await state.update_data(review_order_id=order_id)
+    await state.set_state(ReviewStates.waiting_for_comment)
+    await callback.message.answer("✏️ Напишите ваш комментарий одним сообщением:")
+
+
+@dp.message(ReviewStates.waiting_for_comment)
+async def get_review_comment(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get('review_order_id')
+    await state.clear()
+
+    order = database.get_order(order_id) if order_id else None
+    if not order:
+        await message.answer("❌ Заказ не найден.", reply_markup=main_menu_kb)
+        return
+
+    comment = (message.text or "").strip()
+    database.set_order_review_comment(order_id, comment)
+    await message.answer("✅ Спасибо за комментарий!", reply_markup=main_menu_kb)
+
+    await _notify_admin_about_rating(database.get_order(order_id))
+
+
+@dp.callback_query(lambda call: call.data.startswith("skip_comment_"))
+async def skip_review_comment(callback: types.CallbackQuery):
+    order_id = int(callback.data.split("_")[2])
+    order = database.get_order(order_id)
+    if not order or order['user_id'] != callback.from_user.id:
+        await callback.answer("❌ Заказ не найден!", show_alert=True)
+        return
+
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await _notify_admin_about_rating(order)
 
 

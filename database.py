@@ -82,6 +82,8 @@ def create_order(user_id, username, count, price, payment,
         'payment': payment,
         'status': 'ожидает_подтверждения',
         'prmotion_order_id': None,
+        'rating': None,
+        'review_comment': None,
         'created_at': datetime.now().strftime("%d.%m.%Y %H:%M"),
         'updated_at': datetime.now().strftime("%d.%m.%Y %H:%M")
     }
@@ -123,6 +125,76 @@ def update_prmotion_order_id(order_id, prmotion_id):
         save_orders()
         return True
     return False
+
+
+def set_order_rating(order_id, rating):
+    if order_id in orders:
+        orders[order_id]['rating'] = rating
+        save_orders()
+        return True
+    return False
+
+
+def set_order_review_comment(order_id, comment):
+    if order_id in orders:
+        orders[order_id]['review_comment'] = comment
+        save_orders()
+        return True
+    return False
+
+
+def get_reviews(limit=10):
+    """Возвращает последние оценённые заказы (с рейтингом), от новых к старым."""
+    rated = [o for o in orders.values() if o.get('rating')]
+    rated.sort(key=lambda o: o['id'], reverse=True)
+    return rated[:limit]
+
+
+def get_rating_stats():
+    """Средний рейтинг и общее число оценок по всем заказам."""
+    ratings = [o['rating'] for o in orders.values() if o.get('rating')]
+    if not ratings:
+        return None, 0
+    return sum(ratings) / len(ratings), len(ratings)
+
+
+def delete_review(order_id):
+    """Убирает оценку/комментарий у заказа (сам заказ не трогаем — только отзыв)."""
+    if order_id in orders:
+        orders[order_id]['rating'] = None
+        orders[order_id]['review_comment'] = None
+        save_orders()
+        return True
+    return False
+
+
+def create_test_review(rating, comment=None):
+    """Создаёт тестовый отзыв (без реального заказа) — для проверки того, как
+    отзывы выглядят в разделе '⭐ Отзывы', до того как появятся настоящие."""
+    global order_counter
+    order_counter += 1
+    order_id = order_counter
+
+    orders[order_id] = {
+        'id': order_id,
+        'user_id': 0,
+        'username': 'Тестовый отзыв',
+        'order_type': 'test',
+        'channel': None,
+        'post_link': None,
+        'reaction_type': None,
+        'count': 0,
+        'price': 0,
+        'payment': None,
+        'status': 'выполнен',
+        'prmotion_order_id': None,
+        'rating': rating,
+        'review_comment': comment,
+        'created_at': datetime.now().strftime("%d.%m.%Y %H:%M"),
+        'updated_at': datetime.now().strftime("%d.%m.%Y %H:%M")
+    }
+    save_orders()
+    return order_id
 
 
 # Загружаем заказы сразу при импорте модуля (как было в оригинале)
