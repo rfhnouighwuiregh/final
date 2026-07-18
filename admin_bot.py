@@ -45,8 +45,8 @@ async def confirm_order(callback: types.CallbackQuery):
             f"⚠️ <b>Не могу подтвердить заказ #{order_id} — проверка PRmotion не прошла</b>\n\n"
             f"👤 Клиент: @{order['username']}\n"
             f"🆔 ID: <code>{order['user_id']}</code>\n"
-            f"📢 Канал: {order['channel']}\n"
-            f"👥 Подписчиков: {order['count']}\n"
+            f"{database.format_order_target(order)}\n"
+            f"🔢 {database.format_order_quantity_label(order)}: {order['count']}\n"
             f"💰 Сумма: {order['price']:.2f} ₽\n\n"
             f"🔴 Причина: {error_text}\n\n"
             "Заказ пока НЕ подтверждён и НЕ отклонён, оплата у клиента не запрошена.\n\n"
@@ -65,8 +65,8 @@ async def confirm_order(callback: types.CallbackQuery):
     await bot.send_message(
         order['user_id'],
         f"✅ <b>Заказ #{order_id} подтверждён!</b>\n\n"
-        f"📢 Канал: {order['channel']}\n"
-        f"👥 Подписчиков: {order['count']}\n"
+        f"{database.format_order_target(order)}\n"
+        f"🔢 {database.format_order_quantity_label(order)}: {order['count']}\n"
         f"💰 Сумма: {order['price']:.2f} ₽\n\n"
         f"Нажмите кнопку ниже, чтобы оплатить:",
         parse_mode="HTML",

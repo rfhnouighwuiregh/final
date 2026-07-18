@@ -58,7 +58,13 @@ def prune_old_orders(user_id):
         save_orders()
 
 
-def create_order(user_id, username, channel, count, price, payment):
+def create_order(user_id, username, count, price, payment,
+                  order_type='subscribers', channel=None, post_link=None, reaction_type=None):
+    """
+    order_type: 'subscribers' | 'reactions'
+    Для 'subscribers' — заполняется channel, post_link/reaction_type пустые.
+    Для 'reactions' — заполняется post_link и reaction_type ('good'/'bad'), channel пустой.
+    """
     global order_counter
     order_counter += 1
     order_id = order_counter
@@ -67,7 +73,10 @@ def create_order(user_id, username, channel, count, price, payment):
         'id': order_id,
         'user_id': user_id,
         'username': username,
+        'order_type': order_type,
         'channel': channel,
+        'post_link': post_link,
+        'reaction_type': reaction_type,
         'count': count,
         'price': price,
         'payment': payment,
@@ -79,6 +88,20 @@ def create_order(user_id, username, channel, count, price, payment):
     save_orders()
     prune_old_orders(user_id)
     return order_id
+
+
+def format_order_target(order: dict) -> str:
+    """Строка с адресом заказа для сообщений — канал (подписчики) или пост+тип (реакции).
+    order.get(...) — на случай старых заказов в orders.json, созданных до этой фичи."""
+    if order.get('order_type', 'subscribers') == 'reactions':
+        label = '👍 Хорошие' if order.get('reaction_type') == 'good' else '👎 Плохие'
+        return f"🔗 Пост: {order.get('post_link')}\n❤️ Реакции: {label}"
+    return f"📢 Канал: {order.get('channel')}"
+
+
+def format_order_quantity_label(order: dict) -> str:
+    """'Подписчиков' или 'Реакций' — для сообщений вида '{count} {label}'."""
+    return "Подписчиков" if order.get('order_type', 'subscribers') == 'subscribers' else "Реакций"
 
 
 def get_order(order_id):

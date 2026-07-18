@@ -37,9 +37,8 @@ async def client_pay(callback: types.CallbackQuery):
 
     await callback.message.edit_reply_markup(reply_markup=None)
 
-    count = order['count']
-    price_stars = round(count * config.PRICE_PER_SUBSCRIBER_STARS)
-    price_rub = count * config.PRICE_PER_SUBSCRIBER_RUB
+    price_rub = order['price']
+    price_stars = round(price_rub * config.STARS_MULTIPLIER)
 
     pay_kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -100,7 +99,7 @@ async def cancel_order_by_client(callback: types.CallbackQuery):
         config.ADMIN_ID,
         f"❌ <b>Клиент отменил заказ #{order_id}</b>\n"
         f"👤 @{order['username']}\n"
-        f"📢 Канал: {order['channel']}",
+        f"{database.format_order_target(order)}",
         parse_mode="HTML"
     )
 
@@ -117,18 +116,28 @@ async def pay_stars(callback: types.CallbackQuery):
         return
     await callback.answer()
 
-    count = order['count']
-    price_stars = round(count * config.PRICE_PER_SUBSCRIBER_STARS)
+    price_rub = order['price']
+    price_stars = round(price_rub * config.STARS_MULTIPLIER)
+
+    if order.get('order_type') == 'reactions':
+        reaction_label = "хорошие" if order.get('reaction_type') == 'good' else "плохие"
+        title = f"Накрутка реакций #{order_id}"
+        description = f"Пост: {order['post_link']}\nРеакции ({reaction_label}): {order['count']}"
+        item_label = f"{order['count']} реакций"
+    else:
+        title = f"Накрутка подписчиков #{order_id}"
+        description = f"Канал: {order['channel']}\nПодписчиков: {order['count']}"
+        item_label = f"{order['count']} подписчиков"
 
     try:
         await bot.send_invoice(
             chat_id=callback.message.chat.id,
-            title=f"Накрутка подписчиков #{order_id}",
-            description=f"Канал: {order['channel']}\nПодписчиков: {count}",
+            title=title,
+            description=description,
             payload=f"stars_order_{order_id}",
             provider_token="",
             currency="XTR",
-            prices=[LabeledPrice(label=f"{count} подписчиков", amount=price_stars)],
+            prices=[LabeledPrice(label=item_label, amount=price_stars)],
             start_parameter=f"order_{order_id}",
             need_name=False,
             need_phone_number=False,
@@ -165,8 +174,8 @@ async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
             f"⚠️ <b>Оплата заказа #{order_id} ОТКЛОНЕНА</b>\n\n"
             f"👤 Клиент: @{order.get('username', 'нет_юзернейма')}\n"
             f"🆔 ID: <code>{order['user_id']}</code>\n"
-            f"📢 Канал: {order['channel']}\n"
-            f"👥 {order['count']} подписчиков\n"
+            f"{database.format_order_target(order)}\n"
+            f"🔢 {database.format_order_quantity_label(order)}: {order['count']}\n"
             f"💰 Сумма: {order['price']:.2f} ₽\n\n"
             f"🔍 Причина:\n{error_text}\n\n"
             f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",

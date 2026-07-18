@@ -8,7 +8,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-# ========== ЦЕНЫ И ЛИМИТЫ ==========
+# ========== ПОДПИСЧИКИ: ЦЕНЫ И ЛИМИТЫ ==========
 PRICE_PER_SUBSCRIBER_RUB = 0.40
 STARS_MULTIPLIER = 1.35
 PRICE_PER_SUBSCRIBER_STARS = round(PRICE_PER_SUBSCRIBER_RUB * STARS_MULTIPLIER, 2)
@@ -17,6 +17,18 @@ MAX_ORDER = 50000
 
 # Минимальное количество подписчиков на канале клиента, чтобы принять заказ
 MIN_CHANNEL_SUBSCRIBERS = 5
+
+# ========== РЕАКЦИИ НА ПОСТ: ЦЕНЫ И ЛИМИТЫ ==========
+# ВАЖНО: подставь свою реальную цену — сейчас это заглушка-плейсхолдер.
+PRICE_PER_REACTION_RUB = 0.50
+PRICE_PER_REACTION_STARS = round(PRICE_PER_REACTION_RUB * STARS_MULTIPLIER, 2)
+MIN_REACTIONS_ORDER = 10
+MAX_REACTIONS_ORDER = 5000
+
+# ID двух услуг в PRmotion — найди их через `python get_services.py реакции`
+# (или другое ключевое слово, подходящее под твою панель) и подставь в .env.
+PRMOTION_SERVICE_ID_REACTIONS_GOOD = int(os.getenv("PRMOTION_SERVICE_ID_REACTIONS_GOOD", 0))
+PRMOTION_SERVICE_ID_REACTIONS_BAD = int(os.getenv("PRMOTION_SERVICE_ID_REACTIONS_BAD", 0))
 
 # Запасной курс USD -> RUB, если сервис конвертации недоступен.
 # ВАЖНО: обновляй время от времени вручную — это грубая подстраховка, не рыночный курс.

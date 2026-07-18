@@ -20,6 +20,22 @@ def channel_to_link(channel: str) -> str:
     return channel
 
 
+def get_order_service_id(order: dict) -> int:
+    """Какой SERVICE_ID PRmotion использовать — зависит от типа заказа."""
+    if order.get('order_type') == 'reactions':
+        if order.get('reaction_type') == 'good':
+            return config.PRMOTION_SERVICE_ID_REACTIONS_GOOD
+        return config.PRMOTION_SERVICE_ID_REACTIONS_BAD
+    return config.PRMOTION_SERVICE_ID
+
+
+def get_order_target_link(order: dict) -> str:
+    """Какую ссылку слать в PRmotion — канал (подписчики) или ссылка на пост (реакции)."""
+    if order.get('order_type') == 'reactions':
+        return order.get('post_link')
+    return channel_to_link(order.get('channel'))
+
+
 async def check_connection() -> tuple[bool, str]:
     """
     Быстрая проверка, что PRmotion вообще принимает запросы (сайт жив,
@@ -158,8 +174,12 @@ async def precheck_order(order: dict) -> tuple[bool, str]:
     if services is None:
         return False, "Сервис временно недоступен. Попробуйте, пожалуйста, через несколько минут."
 
+    service_id = get_order_service_id(order)
+    if not service_id:
+        return False, "Сервис временно недоступен (не настроен ID услуги). Напишите в поддержку."
+
     service = next(
-        (s for s in services if str(s.get('service')) == str(config.PRMOTION_SERVICE_ID)),
+        (s for s in services if str(s.get('service')) == str(service_id)),
         None
     )
     if service is None:
@@ -185,14 +205,14 @@ async def precheck_order(order: dict) -> tuple[bool, str]:
     return True, ""
 
 
-async def create_prmotion_order(channel, quantity):
+async def create_prmotion_order(link, quantity, service_id):
     async with aiohttp.ClientSession() as session:
         params = {
             'key': config.PRMOTION_API_KEY,
             'action': 'add',
-            'service': config.PRMOTION_SERVICE_ID,
+            'service': service_id,
             'currency': 'RUB',  # по докам PRmotion это дефолт, но фиксируем явно
-            'link': channel,
+            'link': link,
             'quantity': quantity
         }
         try:
@@ -234,7 +254,11 @@ async def send_to_prmotion(order_id):
             )
             return False
 
-        prmotion_order_id = await create_prmotion_order(channel_to_link(order['channel']), order['count'])
+        prmotion_order_id = await create_prmotion_order(
+            get_order_target_link(order),
+            order['count'],
+            get_order_service_id(order)
+        )
 
         if prmotion_order_id:
             database.update_prmotion_order_id(order_id, prmotion_order_id)
@@ -244,8 +268,8 @@ async def send_to_prmotion(order_id):
                 config.ADMIN_ID,
                 f"🚀 Заказ #{order_id} отправлен в PRmotion!\n"
                 f"👤 Клиент: @{order['username']}\n"
-                f"📢 Канал: {order['channel']}\n"
-                f"👥 Подписчиков: {order['count']}\n"
+                f"{database.format_order_target(order)}\n"
+                f"🔢 {database.format_order_quantity_label(order)}: {order['count']}\n"
                 f"💰 Сумма: {order['price']:.2f} ₽\n"
                 f"🆔 PRmotion ID: {prmotion_order_id}",
                 parse_mode="HTML"

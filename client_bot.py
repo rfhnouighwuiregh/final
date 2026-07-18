@@ -7,7 +7,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
 
@@ -49,8 +49,11 @@ async def _notify_admin_if_precheck_fails(order_id: int):
 
 # ========== СОСТОЯНИЯ ==========
 class OrderStates(StatesGroup):
+    waiting_for_order_type = State()
+    waiting_for_reaction_type = State()
     waiting_for_count = State()
     waiting_for_channel = State()
+    waiting_for_post_link = State()
 
 
 class SupportStates(StatesGroup):
@@ -83,16 +86,33 @@ def cancel_created_order_kb(order_id: int) -> ReplyKeyboardMarkup:
     )
 
 
+order_type_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👥 Подписчики")],
+        [KeyboardButton(text="❤️ Реакции на пост")],
+        [KeyboardButton(text="❌ Отменить заказ")]
+    ],
+    resize_keyboard=True
+)
+
+reaction_type_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👍 Хорошие реакции")],
+        [KeyboardButton(text="👎 Плохие реакции")],
+        [KeyboardButton(text="❌ Отменить заказ")]
+    ],
+    resize_keyboard=True
+)
+
+
 # ========== СТАРТ / МЕНЮ ==========
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "👋 Привет! Я бот для заказа накрутки подписчиков.\n\n"
-        f"💰 <b>Цена:</b> {config.PRICE_PER_SUBSCRIBER_RUB} ₽ за подписчика\n"
-        f"⭐ <b>В Stars:</b> ~{config.PRICE_PER_SUBSCRIBER_STARS:.2f} Stars за подписчика\n"
-        f"📊 <b>Мин. заказ:</b> {config.MIN_ORDER} подписчиков\n"
-        f"📊 <b>Макс. заказ:</b> {config.MAX_ORDER} подписчиков\n\n"
+        "👋 Привет! Я бот для заказа накрутки подписчиков и реакций на посты.\n\n"
+        f"💰 <b>Подписчики:</b> {config.PRICE_PER_SUBSCRIBER_RUB} ₽ ({config.MIN_ORDER}–{config.MAX_ORDER} шт.)\n"
+        f"❤️ <b>Реакции:</b> {config.PRICE_PER_REACTION_RUB} ₽ ({config.MIN_REACTIONS_ORDER}–{config.MAX_REACTIONS_ORDER} шт.)\n\n"
         "🛒 <b>Новый заказ</b> — оформить накрутку\n"
         "📞 <b>Поддержка</b> — задать вопрос администратору\n"
         "📋 <b>Мои заказы</b> — посмотреть статус заказов\n\n"
@@ -105,7 +125,53 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @dp.message(lambda message: message.text == "🛒 Новый заказ")
 async def new_order(message: types.Message, state: FSMContext):
     await message.answer(
-        f"📝 Введите количество подписчиков (от {config.MIN_ORDER} до {config.MAX_ORDER}):",
+        "Что хотите заказать?",
+        reply_markup=order_type_kb
+    )
+    await state.set_state(OrderStates.waiting_for_order_type)
+
+
+@dp.message(OrderStates.waiting_for_order_type)
+async def get_order_type(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отменить заказ":
+        await cmd_cancel(message, state)
+        return
+
+    if message.text == "👥 Подписчики":
+        await state.update_data(order_type='subscribers')
+        await message.answer(
+            f"📝 Введите количество подписчиков (от {config.MIN_ORDER} до {config.MAX_ORDER}):",
+            reply_markup=cancel_kb
+        )
+        await state.set_state(OrderStates.waiting_for_count)
+    elif message.text == "❤️ Реакции на пост":
+        await state.update_data(order_type='reactions')
+        await message.answer(
+            "Какие реакции нужны?",
+            reply_markup=reaction_type_kb
+        )
+        await state.set_state(OrderStates.waiting_for_reaction_type)
+    else:
+        await message.answer("❌ Выберите вариант с клавиатуры.", reply_markup=order_type_kb)
+
+
+@dp.message(OrderStates.waiting_for_reaction_type)
+async def get_reaction_type(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отменить заказ":
+        await cmd_cancel(message, state)
+        return
+
+    if message.text == "👍 Хорошие реакции":
+        reaction_type = 'good'
+    elif message.text == "👎 Плохие реакции":
+        reaction_type = 'bad'
+    else:
+        await message.answer("❌ Выберите вариант с клавиатуры.", reply_markup=reaction_type_kb)
+        return
+
+    await state.update_data(reaction_type=reaction_type)
+    await message.answer(
+        f"📝 Введите количество реакций (от {config.MIN_REACTIONS_ORDER} до {config.MAX_REACTIONS_ORDER}):",
         reply_markup=cancel_kb
     )
     await state.set_state(OrderStates.waiting_for_count)
@@ -134,8 +200,8 @@ def _build_orders_text(user_id: int) -> str:
         text += (
             f"─────────────────\n"
             f"🆔 Заказ #{order['id']}\n"
-            f"📢 Канал: {order['channel']}\n"
-            f"👥 {order['count']} подписчиков\n"
+            f"{database.format_order_target(order)}\n"
+            f"🔢 {database.format_order_quantity_label(order)}: {order['count']}\n"
             f"💰 {order['price']:.2f} ₽\n"
             f"📊 Статус: {status_map.get(order['status'], order['status'])}\n"
         )
@@ -207,7 +273,7 @@ async def cancel_created_order(message: types.Message, state: FSMContext):
         config.ADMIN_ID,
         f"❌ <b>Клиент отменил заказ #{order_id}</b>\n"
         f"👤 @{order['username']}\n"
-        f"📢 Канал: {order['channel']}",
+        f"{database.format_order_target(order)}",
         parse_mode="HTML"
     )
 
@@ -240,7 +306,7 @@ async def support_question(message: types.Message, state: FSMContext):
     )
 
     await admin_bot.send_message(config.ADMIN_ID, admin_message, parse_mode="HTML", reply_markup=reply_keyboard)
-    await message.answer("✅ Обращение отправлено!", reply_markup=ReplyKeyboardRemove(), parse_mode="HTML")
+    await message.answer("✅ Обращение отправлено!", reply_markup=main_menu_kb, parse_mode="HTML")
     await state.clear()
 
 
@@ -304,30 +370,106 @@ async def validate_channel(channel: str):
     return True, None, chat
 
 
+async def _finalize_order(message: types.Message, state: FSMContext, order_id: int, order_summary_html: str):
+    """
+    Общий хвост оформления заказа — что для подписчиков, что для реакций:
+    карточка админу на подтверждение, фоновая проверка PRmotion, ответ клиенту.
+    """
+    order = database.get_order(order_id)
+
+    admin_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_{order_id}")],
+            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{order_id}")]
+        ]
+    )
+
+    order_text = (
+        f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_id}</b>\n─────────────────\n"
+        f"👤 Клиент: @{message.from_user.username or 'нет юзернейма'}\n"
+        f"🆔 ID: <code>{message.from_user.id}</code>\n"
+        f"{order_summary_html}"
+        f"─────────────────\n"
+        f"📅 Создан: {order['created_at']}\n"
+        f"⏳ Статус: <b>Ожидает подтверждения</b>"
+    )
+
+    print(f"📤 Отправляю заказ #{order_id} в админ-бота (ADMIN_ID: {config.ADMIN_ID})")
+    try:
+        await admin_bot.send_message(config.ADMIN_ID, order_text, parse_mode="HTML", reply_markup=admin_kb)
+        print(f"✅ Заказ #{order_id} отправлен в админ-бота")
+    except Exception as e:
+        print(f"❌ Ошибка при отправке в админ-бота: {e}")
+        await message.answer(f"❌ Ошибка при создании заказа: {str(e)}")
+        return
+
+    # Параллельно (не задерживая ответ клиенту) пингуем PRmotion — если уже
+    # сейчас видно проблему с балансом/лимитами, админ узнает об этом сразу,
+    # не дожидаясь момента, когда сам нажмёт "Подтвердить".
+    asyncio.create_task(_notify_admin_if_precheck_fails(order_id))
+
+    await message.answer(
+        f"✅ <b>Заказ #{order_id} создан!</b>\n\n"
+        f"💰 Стоимость: {order['price']:.2f} ₽\n\n"
+        "Администратор подтвердит заказ в ближайшее время, после чего пришлю кнопку оплаты.\n\n"
+        "Передумали? Можно отменить, пока он не подтверждён — кнопка снизу 👇",
+        reply_markup=cancel_created_order_kb(order_id),
+        parse_mode="HTML"
+    )
+    await state.clear()
+
+
+POST_LINK_RE = re.compile(r'^https?://(?:t\.me|telegram\.me)/([\w_]+)/(\d+)$', re.IGNORECASE)
+
+
 # ========== ЗАКАЗ (КОЛИЧЕСТВО) ==========
 @dp.message(OrderStates.waiting_for_count)
 async def get_count(message: types.Message, state: FSMContext):
     if message.text == "❌ Отменить заказ":
         await cmd_cancel(message, state)
         return
+
+    data = await state.get_data()
+    order_type = data.get('order_type', 'subscribers')
+    min_v, max_v = (
+        (config.MIN_ORDER, config.MAX_ORDER) if order_type == 'subscribers'
+        else (config.MIN_REACTIONS_ORDER, config.MAX_REACTIONS_ORDER)
+    )
+
     try:
         count = int(message.text)
     except ValueError:
-        await message.answer(f"❌ Введите число от {config.MIN_ORDER} до {config.MAX_ORDER}.", parse_mode="HTML")
+        await message.answer(f"❌ Введите число от {min_v} до {max_v}.", parse_mode="HTML")
         return
-    if count < config.MIN_ORDER or count > config.MAX_ORDER:
-        await message.answer(f"❌ Введите число от {config.MIN_ORDER} до {config.MAX_ORDER}.", parse_mode="HTML")
+    if count < min_v or count > max_v:
+        await message.answer(f"❌ Введите число от {min_v} до {max_v}.", parse_mode="HTML")
         return
     await state.update_data(count=count)
-    await message.answer(
-        f"✅ Принято! <b>{count}</b> подписчиков.\n"
-        f"💰 Стоимость: <b>{count * config.PRICE_PER_SUBSCRIBER_RUB:.2f} ₽</b>\n"
-        f"⭐ В Stars: <b>{round(count * config.PRICE_PER_SUBSCRIBER_STARS)} Stars</b>\n\n"
-        "📢 Теперь укажите ссылку на канал.\nПример: @my_channel или https://t.me/my_channel",
-        reply_markup=cancel_kb,
-        parse_mode="HTML"
-    )
-    await state.set_state(OrderStates.waiting_for_channel)
+
+    if order_type == 'subscribers':
+        price_rub = count * config.PRICE_PER_SUBSCRIBER_RUB
+        price_stars = round(count * config.PRICE_PER_SUBSCRIBER_STARS)
+        await message.answer(
+            f"✅ Принято! <b>{count}</b> подписчиков.\n"
+            f"💰 Стоимость: <b>{price_rub:.2f} ₽</b>\n"
+            f"⭐ В Stars: <b>{price_stars} Stars</b>\n\n"
+            "📢 Теперь укажите ссылку на канал.\nПример: @my_channel или https://t.me/my_channel",
+            reply_markup=cancel_kb,
+            parse_mode="HTML"
+        )
+        await state.set_state(OrderStates.waiting_for_channel)
+    else:
+        price_rub = count * config.PRICE_PER_REACTION_RUB
+        price_stars = round(count * config.PRICE_PER_REACTION_STARS)
+        await message.answer(
+            f"✅ Принято! <b>{count}</b> реакций.\n"
+            f"💰 Стоимость: <b>{price_rub:.2f} ₽</b>\n"
+            f"⭐ В Stars: <b>{price_stars} Stars</b>\n\n"
+            "🔗 Теперь укажите ссылку на конкретный пост.\nПример: https://t.me/my_channel/123",
+            reply_markup=cancel_kb,
+            parse_mode="HTML"
+        )
+        await state.set_state(OrderStates.waiting_for_post_link)
 
 
 @dp.message(OrderStates.waiting_for_channel)
@@ -359,53 +501,75 @@ async def get_channel(message: types.Message, state: FSMContext):
     order_id = database.create_order(
         user_id=message.from_user.id,
         username=message.from_user.username or "нет юзернейма",
+        order_type='subscribers',
         channel=channel,
         count=count,
         price=price_rub,
         payment="Stars"  # реальный способ оплаты выбирается позже, после подтверждения; карта пока не работает
     )
 
-    admin_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_{order_id}")],
-            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{order_id}")]
-        ]
-    )
-
-    order_text = (
-        f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_id}</b>\n─────────────────\n"
-        f"👤 Клиент: @{message.from_user.username or 'нет юзернейма'}\n"
-        f"🆔 ID: <code>{message.from_user.id}</code>\n"
+    summary = (
         f"👥 Подписчиков: <b>{count}</b>\n"
         f"📢 Канал: <b>{channel}</b>\n"
-        f"💰 Стоимость: <b>{price_rub:.2f} ₽</b> (~{price_stars} Stars)\n─────────────────\n"
-        f"📅 Создан: {database.orders[order_id]['created_at']}\n"
-        f"⏳ Статус: <b>Ожидает подтверждения</b>"
+        f"💰 Стоимость: <b>{price_rub:.2f} ₽</b> (~{price_stars} Stars)\n"
     )
+    await _finalize_order(message, state, order_id, summary)
 
-    print(f"📤 Отправляю заказ #{order_id} в админ-бота (ADMIN_ID: {config.ADMIN_ID})")
-    try:
-        await admin_bot.send_message(config.ADMIN_ID, order_text, parse_mode="HTML", reply_markup=admin_kb)
-        print(f"✅ Заказ #{order_id} отправлен в админ-бота")
-    except Exception as e:
-        print(f"❌ Ошибка при отправке в админ-бота: {e}")
-        await message.answer(f"❌ Ошибка при создании заказа: {str(e)}")
+
+@dp.message(OrderStates.waiting_for_post_link)
+async def get_post_link(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отменить заказ":
+        await cmd_cancel(message, state)
         return
 
-    # Параллельно (не задерживая ответ клиенту) пингуем PRmotion — если уже
-    # сейчас видно проблему с балансом/лимитами, админ узнает об этом сразу,
-    # не дожидаясь момента, когда сам нажмёт "Подтвердить".
-    asyncio.create_task(_notify_admin_if_precheck_fails(order_id))
+    post_link = message.text.strip()
+    match = POST_LINK_RE.match(post_link)
+    if not match:
+        await message.answer(
+            "❌ Неверный формат! Нужна ссылка именно на пост, например:\nhttps://t.me/my_channel/123",
+            reply_markup=cancel_kb,
+            parse_mode="HTML"
+        )
+        return
 
-    await message.answer(
-        f"✅ <b>Заказ #{order_id} создан!</b>\n\n"
-        f"👥 Подписчиков: {count}\n"
-        f"💰 Стоимость: {price_rub:.2f} ₽ (~{price_stars} Stars)\n\n"
-        "Администратор подтвердит заказ в ближайшее время, после чего пришлю кнопку оплаты.\n\n"
-        "Передумали? Можно отменить, пока он не подтверждён — кнопка снизу 👇",
-        reply_markup=cancel_created_order_kb(order_id),
-        parse_mode="HTML"
+    channel_username, message_id = match.group(1), match.group(2)
+
+    checking_msg = await message.answer("🔍 Проверяю канал...")
+    ok, error_text, chat = await validate_channel(f"@{channel_username}")
+    await checking_msg.delete()
+
+    if not ok:
+        await message.answer(error_text, reply_markup=cancel_kb, parse_mode="HTML")
+        return
+
+    # Нормализуем ссылку под точный @username канала, как в validate_channel для подписчиков
+    if chat.username:
+        post_link = f"https://t.me/{chat.username}/{message_id}"
+
+    data = await state.get_data()
+    count = data['count']
+    reaction_type = data['reaction_type']
+    price_rub = count * config.PRICE_PER_REACTION_RUB
+    price_stars = round(count * config.PRICE_PER_REACTION_STARS)
+
+    order_id = database.create_order(
+        user_id=message.from_user.id,
+        username=message.from_user.username or "нет юзернейма",
+        order_type='reactions',
+        post_link=post_link,
+        reaction_type=reaction_type,
+        count=count,
+        price=price_rub,
+        payment="Stars"
     )
-    await state.clear()
+
+    reaction_label = "👍 Хорошие" if reaction_type == 'good' else "👎 Плохие"
+    summary = (
+        f"❤️ Тип: <b>Реакции ({reaction_label})</b>\n"
+        f"🔗 Пост: <b>{post_link}</b>\n"
+        f"🔢 Количество: <b>{count}</b>\n"
+        f"💰 Стоимость: <b>{price_rub:.2f} ₽</b> (~{price_stars} Stars)\n"
+    )
+    await _finalize_order(message, state, order_id, summary)
 
 
