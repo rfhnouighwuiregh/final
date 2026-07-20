@@ -54,6 +54,7 @@ class OrderStates(StatesGroup):
     waiting_for_count = State()
     waiting_for_channel = State()
     waiting_for_post_link = State()
+    waiting_for_review = State()
 
 
 class SupportStates(StatesGroup):
@@ -413,8 +414,8 @@ async def _finalize_order(message: types.Message, state: FSMContext, order_id: i
 
     order_text = (
         f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_id}</b>\n─────────────────\n"
-        f"👤 Клиент: @{message.from_user.username or 'нет юзернейма'}\n"
-        f"🆔 ID: <code>{message.from_user.id}</code>\n"
+        f"👤 Клиент: @{order['username']}\n"
+        f"🆔 ID: <code>{order['user_id']}</code>\n"
         f"{order_summary_html}"
         f"─────────────────\n"
         f"📅 Создан: {order['created_at']}\n"
@@ -473,6 +474,13 @@ async def get_count(message: types.Message, state: FSMContext):
         return
     await state.update_data(count=count)
 
+    if order_type == 'subscribers' and data.get('channel'):
+        await _show_review(message, state)
+        return
+    if order_type == 'reactions' and data.get('post_link'):
+        await _show_review(message, state)
+        return
+
     if order_type == 'subscribers':
         price_rub = count * config.PRICE_PER_SUBSCRIBER_RUB
         price_stars = round(count * config.PRICE_PER_SUBSCRIBER_STARS)
@@ -497,6 +505,162 @@ async def get_count(message: types.Message, state: FSMContext):
         await state.set_state(OrderStates.waiting_for_post_link)
 
 
+async def _show_review(message: types.Message, state: FSMContext):
+    """Показывает клиенту карточку 'проверьте данные заказа' с возможностью
+    поправить количество или ссылку перед тем, как заказ реально уйдёт админу."""
+    data = await state.get_data()
+    order_type = data['order_type']
+    count = data['count']
+
+    review_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Всё верно, оформить", callback_data="review_confirm")],
+            [
+                InlineKeyboardButton(text="✏️ Кол-во", callback_data="review_edit_count"),
+                InlineKeyboardButton(text="✏️ Ссылку", callback_data="review_edit_link")
+            ],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="review_cancel")]
+        ]
+    )
+
+    if order_type == 'subscribers':
+        channel = data['channel']
+        price_rub = count * config.PRICE_PER_SUBSCRIBER_RUB
+        price_stars = round(count * config.PRICE_PER_SUBSCRIBER_STARS)
+        text = (
+            "🔎 <b>Проверьте данные заказа:</b>\n\n"
+            f"👥 Подписчиков: <b>{count}</b>\n"
+            f"📢 Канал: <b>{channel}</b>\n"
+            f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)"
+        )
+    else:
+        post_link = data['post_link']
+        reaction_type = data['reaction_type']
+        reaction_label = "👍 Хорошие" if reaction_type == 'good' else "👎 Плохие"
+        price_rub = count * config.PRICE_PER_REACTION_RUB
+        price_stars = round(count * config.PRICE_PER_REACTION_STARS)
+        text = (
+            "🔎 <b>Проверьте данные заказа:</b>\n\n"
+            f"❤️ Тип: <b>Реакции ({reaction_label})</b>\n"
+            f"🔗 Пост: <b>{post_link}</b>\n"
+            f"🔢 Количество: <b>{count}</b>\n"
+            f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)"
+        )
+
+    await state.set_state(OrderStates.waiting_for_review)
+    await message.answer(text, parse_mode="HTML", reply_markup=review_kb)
+
+
+@dp.callback_query(lambda call: call.data == "review_confirm")
+async def review_confirm(callback: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() != OrderStates.waiting_for_review:
+        await callback.answer("⚠️ Заказ уже оформлен или отменён", show_alert=True)
+        return
+    data = await state.get_data()
+    order_type = data['order_type']
+    count = data['count']
+
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    if order_type == 'subscribers':
+        channel = data['channel']
+        price_rub = count * config.PRICE_PER_SUBSCRIBER_RUB
+        price_stars = round(count * config.PRICE_PER_SUBSCRIBER_STARS)
+        order_id = database.create_order(
+            user_id=callback.from_user.id,
+            username=callback.from_user.username or "нет юзернейма",
+            order_type='subscribers',
+            channel=channel,
+            count=count,
+            price=price_rub,
+            payment="Stars"
+        )
+        summary = (
+            f"👥 Подписчиков: <b>{count}</b>\n"
+            f"📢 Канал: <b>{channel}</b>\n"
+            f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)\n"
+        )
+    else:
+        post_link = data['post_link']
+        reaction_type = data['reaction_type']
+        price_rub = count * config.PRICE_PER_REACTION_RUB
+        price_stars = round(count * config.PRICE_PER_REACTION_STARS)
+        order_id = database.create_order(
+            user_id=callback.from_user.id,
+            username=callback.from_user.username or "нет юзернейма",
+            order_type='reactions',
+            post_link=post_link,
+            reaction_type=reaction_type,
+            count=count,
+            price=price_rub,
+            payment="Stars"
+        )
+        reaction_label = "👍 Хорошие" if reaction_type == 'good' else "👎 Плохие"
+        summary = (
+            f"❤️ Тип: <b>Реакции ({reaction_label})</b>\n"
+            f"🔗 Пост: <b>{post_link}</b>\n"
+            f"🔢 Количество: <b>{count}</b>\n"
+            f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)\n"
+        )
+
+    await _finalize_order(callback.message, state, order_id, summary)
+
+
+@dp.callback_query(lambda call: call.data == "review_edit_count")
+async def review_edit_count(callback: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() != OrderStates.waiting_for_review:
+        await callback.answer("⚠️ Заказ уже оформлен или отменён", show_alert=True)
+        return
+    data = await state.get_data()
+    order_type = data['order_type']
+    min_v, max_v = (
+        (config.MIN_ORDER, config.MAX_ORDER) if order_type == 'subscribers'
+        else (config.MIN_REACTIONS_ORDER, config.MAX_REACTIONS_ORDER)
+    )
+
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await state.set_state(OrderStates.waiting_for_count)
+    await callback.message.answer(
+        f"✏️ Введите новое количество (от {min_v} до {max_v}):",
+        reply_markup=cancel_kb
+    )
+
+
+@dp.callback_query(lambda call: call.data == "review_edit_link")
+async def review_edit_link(callback: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() != OrderStates.waiting_for_review:
+        await callback.answer("⚠️ Заказ уже оформлен или отменён", show_alert=True)
+        return
+    data = await state.get_data()
+    order_type = data['order_type']
+
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    if order_type == 'subscribers':
+        await state.set_state(OrderStates.waiting_for_channel)
+        await callback.message.answer(
+            "✏️ Укажите новую ссылку на канал.\nПример: @my_channel или https://t.me/my_channel",
+            reply_markup=cancel_kb
+        )
+    else:
+        await state.set_state(OrderStates.waiting_for_post_link)
+        await callback.message.answer(
+            "✏️ Укажите новую ссылку на пост.\nПример: https://t.me/my_channel/123",
+            reply_markup=cancel_kb
+        )
+
+
+@dp.callback_query(lambda call: call.data == "review_cancel")
+async def review_cancel(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await state.clear()
+    await callback.message.answer("❌ Заказ отменён.", reply_markup=main_menu_kb)
+
+
 @dp.message(OrderStates.waiting_for_channel)
 async def get_channel(message: types.Message, state: FSMContext):
     if message.text == "❌ Отменить заказ":
@@ -518,27 +682,8 @@ async def get_channel(message: types.Message, state: FSMContext):
     # Дальше используем @username из get_chat — он точнее того, что ввёл клиент
     channel = f"@{chat.username}" if chat.username else channel
 
-    data = await state.get_data()
-    count = data['count']
-    price_rub = count * config.PRICE_PER_SUBSCRIBER_RUB
-    price_stars = round(count * config.PRICE_PER_SUBSCRIBER_STARS)
-
-    order_id = database.create_order(
-        user_id=message.from_user.id,
-        username=message.from_user.username or "нет юзернейма",
-        order_type='subscribers',
-        channel=channel,
-        count=count,
-        price=price_rub,
-        payment="Stars"  # реальный способ оплаты выбирается позже, после подтверждения; карта пока не работает
-    )
-
-    summary = (
-        f"👥 Подписчиков: <b>{count}</b>\n"
-        f"📢 Канал: <b>{channel}</b>\n"
-        f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)\n"
-    )
-    await _finalize_order(message, state, order_id, summary)
+    await state.update_data(channel=channel, order_type='subscribers')
+    await _show_review(message, state)
 
 
 @dp.message(OrderStates.waiting_for_post_link)
@@ -571,31 +716,8 @@ async def get_post_link(message: types.Message, state: FSMContext):
     if chat.username:
         post_link = f"https://t.me/{chat.username}/{message_id}"
 
-    data = await state.get_data()
-    count = data['count']
-    reaction_type = data['reaction_type']
-    price_rub = count * config.PRICE_PER_REACTION_RUB
-    price_stars = round(count * config.PRICE_PER_REACTION_STARS)
-
-    order_id = database.create_order(
-        user_id=message.from_user.id,
-        username=message.from_user.username or "нет юзернейма",
-        order_type='reactions',
-        post_link=post_link,
-        reaction_type=reaction_type,
-        count=count,
-        price=price_rub,
-        payment="Stars"
-    )
-
-    reaction_label = "👍 Хорошие" if reaction_type == 'good' else "👎 Плохие"
-    summary = (
-        f"❤️ Тип: <b>Реакции ({reaction_label})</b>\n"
-        f"🔗 Пост: <b>{post_link}</b>\n"
-        f"🔢 Количество: <b>{count}</b>\n"
-        f"⭐ Стоимость: <b>{price_stars} Stars</b> (~{price_rub:.2f} ₽)\n"
-    )
-    await _finalize_order(message, state, order_id, summary)
+    await state.update_data(post_link=post_link, order_type='reactions')
+    await _show_review(message, state)
 
 
 # ========== ОЦЕНКА ЗАКАЗА ==========

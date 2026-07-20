@@ -40,20 +40,24 @@ async def client_pay(callback: types.CallbackQuery):
     price_rub = order['price']
     price_stars = round(price_rub * config.STARS_MULTIPLIER)
 
-    card_label = "🏦 Оплатить картой" if config.PROVIDER_TOKEN else "🏦 Оплатить картой (пока недоступно)"
-    pay_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⭐ Оплатить Stars", callback_data=f"pay_stars_{order_id}")],
-            [InlineKeyboardButton(text=card_label, callback_data=f"pay_card_{order_id}")],
-            [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"cancel_order_{order_id}")]
-        ]
-    )
-    await callback.message.answer(
+    card_available = config.PROVIDER_TOKEN and price_rub >= config.MIN_CARD_AMOUNT_RUB
+
+    buttons = [[InlineKeyboardButton(text="⭐ Оплатить Stars", callback_data=f"pay_stars_{order_id}")]]
+    if card_available:
+        buttons.append([InlineKeyboardButton(text="🏦 Оплатить картой", callback_data=f"pay_card_{order_id}")])
+    buttons.append([InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"cancel_order_{order_id}")])
+    pay_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    text = (
         f"💳 <b>Выберите способ оплаты для заказа #{order_id}</b>\n\n"
-        f"⭐ К оплате: {price_stars} Stars (~{price_rub:.2f} ₽)",
-        parse_mode="HTML",
-        reply_markup=pay_kb
+        f"⭐ К оплате: {price_stars} Stars (~{price_rub:.2f} ₽)"
     )
+    if config.PROVIDER_TOKEN and not card_available:
+        text += (
+            f"\n\n🏦 Оплата картой доступна для заказов от {config.MIN_CARD_AMOUNT_RUB} ₽ "
+            "(ограничение платёжной системы) — для этого заказа доступна оплата только Stars."
+        )
+    await callback.message.answer(text, parse_mode="HTML", reply_markup=pay_kb)
 
 
 @dp.callback_query(lambda call: call.data.startswith("pay_card_"))
@@ -70,10 +74,17 @@ async def pay_card(callback: types.CallbackQuery):
     if not config.PROVIDER_TOKEN:
         await callback.answer("Оплата картой пока не подключена", show_alert=True)
         await callback.message.edit_reply_markup(reply_markup=None)
+        retry_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⭐ Оплатить Stars", callback_data=f"pay_stars_{order_id}")],
+                [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"cancel_order_{order_id}")]
+            ]
+        )
         await callback.message.answer(
             "🏦 <b>Оплата картой / СБП пока не настроена</b>\n\n"
             "Сейчас доступна оплата через ⭐ Stars.",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=retry_kb
         )
         return
 
@@ -81,6 +92,16 @@ async def pay_card(callback: types.CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
 
     price_rub = order['price']
+
+    if price_rub < config.MIN_CARD_AMOUNT_RUB:
+        await callback.answer("Сумма слишком мала для оплаты картой", show_alert=True)
+        await callback.message.answer(
+            f"🏦 Оплата картой доступна для заказов от {config.MIN_CARD_AMOUNT_RUB} ₽ "
+            "(ограничение платёжной системы). Для этого заказа используйте ⭐ Stars.",
+            parse_mode="HTML"
+        )
+        return
+
     price_kopecks = round(price_rub * 100)
 
     if order.get('order_type') == 'reactions':
